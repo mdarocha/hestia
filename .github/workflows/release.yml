@@ -100,7 +100,7 @@ jobs:
           ## Usage
 
           \`\`\`yaml
-          - uses: Mic92/hestia@${tag}
+          - uses: ${GITHUB_REPOSITORY}@${tag}
             with:
               version: ${tag}
           \`\`\`
