@@ -1,0 +1,37 @@
+name: Union test
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        type: string
+        required: true
+  pull_request:
+permissions:
+  actions: write
+  contents: read
+env:
+  SALT: s1793709824
+  BINARY_RUN: 41638085163
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: NixOS/nix-installer-action@main
+      - uses: actions/download-artifact@v8
+        with:
+          name: hestia-x86_64-linux
+          run-id: ${{ env.BINARY_RUN }}
+          github-token: ${{ github.token }}
+      - run: chmod +x hestia-x86_64-linux
+      - uses: ./
+        with:
+          binary: ./hestia-x86_64-linux
+      - name: Run phase
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HESTIA_BIN: ${{ github.workspace }}/hestia-x86_64-linux
+          INPUT_PHASE: ${{ inputs.phase }}
+        run: |
+          phase="${INPUT_PHASE:-$(cat .github/union-phase)}"
+          .github/union-test.sh "$phase"
