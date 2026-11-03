@@ -48,17 +48,21 @@ case "$phase" in
   pr2) expect_cached A B C; build D ;;
   pr3) expect_cached A B C D; build E ;;
   gc)
-    echo "--- manifests before gc"; list_manifests
+    echo "--- manifests before gc"; list_manifests | tee before.txt
     "$HESTIA_BIN" gc
-    echo "--- manifests after gc"; list_manifests > after.txt; cat after.txt
-    ref="refs/heads/${GITHUB_REF_NAME}"
-    main_keys=$(awk -F'\t' -v r="$ref" '$2==r && $1 ~ /^m3#/ {print $1}' after.txt)
-    echo "main chain: $main_keys"
-    [ "$(echo "$main_keys" | wc -l)" = 1 ] && echo "$main_keys" | grep -q '^m3#2$' \
-      || { echo "FAIL: main chain must be exactly m3#2"; exit 1; }
-    pr_keys=$(awk -F'\t' '$2 ~ /^refs\/pull\// && $1 ~ /^m3pr#/ {print $1}' after.txt)
-    echo "PR chain: $pr_keys"
-    [ "$pr_keys" = 'm3pr#3' ] || { echo "FAIL: PR chain must be exactly m3pr#3"; exit 1; }
+    echo "--- manifests after gc"; list_manifests | tee after.txt
+    # Each (family, ref) must keep exactly its newest entry.
+    heads() { awk -F'\t' '{split($1,k,"#"); id=k[2]+0; key=k[1] "\t" $2; if (id>max[key]) max[key]=id} END {for (key in max) print key "\t" max[key]}' "$1" | sort; }
+    heads before.txt > heads-before.txt
+    heads after.txt > heads-after.txt
+    echo "heads before:"; cat heads-before.txt
+    echo "heads after:"; cat heads-after.txt
+    diff heads-before.txt heads-after.txt || { echo "FAIL: a head changed"; exit 1; }
+    [ "$(wc -l < after.txt)" = "$(wc -l < heads-after.txt)" ] \
+      || { echo "FAIL: superseded manifests were left behind"; exit 1; }
+    grep -qP '^m3#\d+\trefs/heads/' after.txt || { echo "FAIL: main chain gone"; exit 1; }
+    grep -qP '^m3pr#\d+\trefs/pull/' after.txt || { echo "FAIL: PR chain gone"; exit 1; }
+    echo "OK: per-ref heads preserved, superseded manifests deleted"
     ;;
   pr4) expect_cached A B C D E; build F ;;
   *) echo "unknown phase $phase"; exit 1 ;;
