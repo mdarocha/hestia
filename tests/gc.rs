@@ -805,13 +805,20 @@ async fn manifest_cleanup_preserves_ref_heads_and_protected_entries() {
         let own = gc.twirp.version();
 
         // Exercise both the issue's young main entry and an aged main head:
-        // a higher PR index supersedes neither one.
+        // a higher PR index supersedes neither one. Entries 13+ are the
+        // pull-request manifest family (m3pr#), judged per ref as well.
         for main_age in [60, 2 * HOUR] {
-            let entry = |id, suffix, ref_name, version, created: String| {
+            let entry_in = |family: &str, id, suffix, ref_name, version, created: String| {
                 json!({
-                    "id": id, "key": format!("{MANIFEST_PREFIX}#{suffix}"),
+                    "id": id, "key": format!("{family}#{suffix}"),
                     "ref": ref_name, "version": version, "created_at": created,
                 })
+            };
+            let entry = |id, suffix, ref_name, version, created: String| {
+                entry_in(MANIFEST_PREFIX, id, suffix, ref_name, version, created)
+            };
+            let pr_entry = |id, suffix, ref_name, created: String| {
+                entry_in("m3pr", id, suffix, ref_name, own, created)
             };
             let timestamp = |age| format_timestamp(T0 - age);
             let old = timestamp(2 * HOUR);
@@ -831,16 +838,20 @@ async fn manifest_cleanup_preserves_ref_heads_and_protected_entries() {
                 entry(9, "7", pr_ref, own, "invalid".to_string()),
                 entry(10, "6", pr_ref, own, future),
                 entry(11, "+99", main_ref, own, old.clone()),
-                entry(12, "99", main_ref, "other-version", old),
+                entry(12, "99", main_ref, "other-version", old.clone()),
+                pr_entry(13, "1", pr_ref, old.clone()),
+                pr_entry(14, "2", pr_ref, old.clone()),
+                pr_entry(15, "3", pr_ref, old.clone()),
+                pr_entry(16, "1", "refs/pull/2/merge", old),
             ];
             let expected: Vec<Value> = entries
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|entry| entry["id"] != 2 && entry["id"] != 7)
+                .filter(|entry| ![2, 7, 13, 14].contains(&entry["id"].as_u64().unwrap()))
                 .cloned()
                 .collect();
-            assert_eq!(gc.cleanup_manifests(T0).await.unwrap(), 2);
+            assert_eq!(gc.cleanup_manifests(T0).await.unwrap(), 4);
             assert_eq!(*entries.lock().unwrap(), expected);
             assert_eq!(gc.cleanup_manifests(T0).await.unwrap(), 0);
             assert!(!gc.rest.delete_by_id(2).await.unwrap());
@@ -1112,6 +1123,63 @@ async fn stale_drain_resurrecting_dropped_path_keeps_its_pack() {
         sim.gc(GcPolicy::default()).run(false, t2).await.unwrap();
         sim.assert_no_dangling_pack_references().await;
         sim.assert_readable(&[&big, &small]).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn packs_held_by_a_pull_request_manifest_survive_gc() {
+    // A PR chain (m3pr#) may still reference packs main has repacked away.
+    timed(async {
+        for pr_holds_pack in [false, true] {
+            let fake = FakeGha::start().await;
+            let http = client();
+            let sim = SimCache::new(&fake, &http);
+
+            let big = SimPath::new("big-app", 1, 200_000);
+            let small = SimPath::new("small-lib", 2, 40_000);
+            fake.set_clock(T0);
+            sim.push(
+                "main",
+                &[big.clone(), small.clone()],
+                &[big.clone(), small.clone()],
+                T0,
+            )
+            .await;
+            let original_pack = *sim.manifest().await.packs.keys().next().unwrap();
+
+            if pr_holds_pack {
+                let snapshot = sim.manifest().await;
+                SaveMutable::new(&sim.twirp, &sim.http, "m3pr")
+                    .save(|_| {
+                        snapshot
+                            .encode()
+                            .map_err(|err| GhaError::InvalidResponse(err.to_string()))
+                    })
+                    .await
+                    .expect("PR manifest commit");
+            }
+
+            // big dies on main; superseded main manifests guard its pack
+            // for a couple of runs, so GC daily until they are gone.
+            let t1 = T0 + 20 * DAY;
+            fake.set_clock(t1);
+            sim.push("main", &[], std::slice::from_ref(&small), t1)
+                .await;
+            for day in 0..4 {
+                let now = t1 + day * DAY;
+                fake.set_clock(now);
+                sim.gc(GcPolicy::default()).run(false, now).await.unwrap();
+            }
+
+            assert_eq!(
+                sim.stored_pack_keys()
+                    .await
+                    .contains(&pack_cache_key(&original_pack)),
+                pr_holds_pack,
+                "the old pack must survive exactly when a PR manifest references it"
+            );
+        }
     })
     .await;
 }
