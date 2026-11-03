@@ -11,7 +11,7 @@ permissions:
   contents: read
 env:
   SALT: s1793709824
-  BINARY_RUN: 41638085163
+  BINARY_RUN: 41639561942
 jobs:
   test:
     runs-on: ubuntu-latest
